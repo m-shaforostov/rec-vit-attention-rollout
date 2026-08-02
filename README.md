@@ -1,442 +1,319 @@
-# RecViT Attention Rollout Manual
+# Attention Rollout for Recurrent Vision Transformers
 
-This project implements and evaluates an adapted Attention Rollout method for the Recurrent Vision Transformer (RecViT). The main purpose is to generate attention-based explanation maps for image classification, compare raw RecViT attention maps with recurrent rollout maps, and evaluate the generated maps against PET trimap-based foreground masks.
+<p align="center">
+  <strong>Tracing attention through both Transformer layers and recurrent inference steps in RecViT.</strong>
+</p>
 
-The project was created for a bachelor thesis about interpretability of Vision Transformer models, with a focus on adapting Attention Rollout to the recurrent structure of RecViT.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-Explainability-EE4C2C?logo=pytorch&logoColor=white">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-green.svg"></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-research%20prototype-6f42c1">
+</p>
 
-## Main features
+Standard Attention Rollout follows information flow across the layers of a feed-forward Vision Transformer. **RecViT adds recurrence:** an image is processed repeatedly while the class token is propagated between steps. A rollout confined to one pass therefore cannot describe the complete recurrent inference process.
 
-- Load trained RecViT checkpoints for CIFAR-10, CIFAR-100, or Oxford-IIIT PET.
-- Extract attention matrices from RecViT attention blocks using forward hooks.
-- Compute standard Attention Rollout inside each recurrent step.
-- Connect recurrent steps using a RecViT-specific rollout aggregation method.
-- Compare two patch-transition assumptions across recurrent steps:
-  - `identity`: patch positions are treated as corresponding across steps.
-  - `zero`: patch tokens are treated as new independent inputs at each step.
-- Generate final rollout heatmaps and step-wise rollout heatmaps.
-- Generate raw attention maps for selected recurrent steps and layers in the grid experiment.
-- Evaluate attention maps against trimap-derived foreground/background masks.
-- Save visual outputs, NumPy masks, CSV score files, and run metadata.
+This project extends Attention Rollout with **recurrent transition matrices**, allowing attention to be aggregated across both Transformer layers and RecViT steps. It also provides per-step visualizations and a trimap-based evaluation pipeline for measuring foreground/background alignment on the Oxford-IIIT Pet dataset.
 
-## Project structure
+## Visual overview
 
-Typical important files:
+### Strong localization, even with a wrong prediction
 
-```text
-.
-├── rec_vit_explain.py              # Run RecViT rollout for one image/configuration
-├── rec_vit_rollout.py              # Core RecViT-adapted Attention Rollout implementation
-├── run_recvit_rollout_grid.py      # Main PET grid experiment script
-├── attention_map_evaluation.py     # Trimap-based attention scoring utilities
-├── reveal_segmentation.py          # Trimap generation and visualization utilities
-├── experiment_cifar10.py           # Original/helper CIFAR-10 attention experiment script
-├── examples_PET/                   # PET input images and matching trimap images
-├── rollout_results/                # Default single-run output folder
-└── rollout_PET_grid_results/       # Default grid-experiment output folder
+<table>
+  <tr>
+    <th>Input</th>
+    <th>Final recurrent rollout</th>
+    <th>Rollout + trimap boundary</th>
+  </tr>
+  <tr>
+    <td><img src="assets/results/Bombay_11_fusion-mean_discard-0p9_patch-identity/input.png" alt="Bombay cat input" width="260"></td>
+    <td><img src="assets/results/Bombay_11_fusion-mean_discard-0p9_patch-identity/rec_rollout_3_loops_identity_0.900_mean.png" alt="Bombay cat recurrent attention rollout" width="260"></td>
+    <td><img src="assets/results/Bombay_11_fusion-mean_discard-0p9_patch-identity/trimap/final_rollout_attention_trimap_overlay.png" alt="Bombay cat rollout with trimap boundary" width="260"></td>
+  </tr>
+</table>
+
+The rollout is strongly concentrated on the cat, especially its face and eyes (**attention score: 0.600**). The final prediction is **Sphynx**, however, rather than Bombay. This is a useful reminder that good spatial localization does not guarantee correct fine-grained classification.
+
+## Key results
+
+The final thesis experiments evaluated **432 completed configurations** on eight selected Oxford-IIIT Pet images. The grid covered 2-4 recurrent loops, three attention-head fusion methods, three discard ratios, and two patch-transition strategies.
+
+| Comparison | Fixed raw final-layer attention | Last-step local rollout | Final recurrent rollout |
+|---|---:|---:|---:|
+| Mean score across the full matched grid | -0.266 | -0.093 | **-0.011** |
+
+- Final recurrent rollout scored higher than the fixed raw map in **263/432 cases (60.9%)**.
+- It scored higher than last-step local rollout in **358/432 cases (82.9%)**.
+- In the main configuration (`3 loops`, `mean` fusion, `discard_ratio=0.9`), the mean score improved from **-0.699** for the fixed raw reference to **0.295** with `identity` and **0.359** with `zero`.
+
+The metric measures spatial agreement with PET foreground and background regions. These results support recurrent rollout as a useful diagnostic aggregation method, **not as a causal explanation** of the model's decision.
+
+## Why recurrent rollout is needed
+
+| Standard Attention Rollout | This project |
+|---|---|
+| Assumes one feed-forward Transformer pass | Models multiple recurrent RecViT steps |
+| Composes attention across layers | Composes attention across layers **and recurrent transitions** |
+| Produces a rollout for one model pass | Produces a final rollout and final-to-step-input diagnostic maps |
+| Has no rule for cross-step token dependencies | Explicitly represents propagated CLS-token information |
+
+## Method
+
+At every recurrent step, the implementation captures the attention matrices from all Transformer layers and computes a local rollout. It then connects consecutive steps through transition matrices derived from RecViT's propagated class token.
+
+```mermaid
+flowchart TB
+    I["Input image"] --> S1["RecViT step 1"]
+    S1 -->|"propagated CLS token"| S2["RecViT step 2"]
+    S2 -->|"propagated CLS token"| S3["RecViT step 3"]
+
+    S1 --> R1["Local rollout R1"]
+    S2 --> R2["Local rollout R2"]
+    S3 --> R3["Local rollout R3"]
+
+    R1 --> C2["Transition C2"]
+    R2 --> C3["Transition C3"]
+    R3 --> F["Final recurrent rollout"]
+    C2 --> F
+    C3 --> F
 ```
 
-## RecViT Dependency
+For recurrent step \(t\), residual-aware layer attentions are composed into a local rollout matrix:
 
-This project depends on the original RecViT implementation by Pocos et al. All necessary scripts, model definitions, utilities, and trained checkpoints required to run the experiments are stored in the `rec_vit_model` directory.
+$$R_t = \widetilde{A}_{t,L}\widetilde{A}_{t,L-1}\cdots\widetilde{A}_{t,1}.$$
 
-The `rec_vit_model` directory contains the original RecViT codebase together with the trained model checkpoints used in the experiments. The scripts developed as part of this thesis, including `rec_vit_rollout.py`, `rec_vit_explain.py`, `run_recvit_rollout_grid.py`, `attention_map_evaluation.py`, and `reveal_segmentation.py`, build on top of this implementation and use its utilities for model loading and inference.
+Starting from the last step, the method moves backward through recurrent transitions:
 
-In particular, trained models are loaded through:
+$$F_T = R_T, \qquad F_{t-1} = F_t C_t.$$
 
-```python
-from rec_vit_model.pckgs.networks.network_utils import load_trained_network
-```
+The first row of each transition matrix represents the propagated CLS-token dependency. Because RecViT does not propagate patch tokens in the same explicit way, the implementation evaluates two assumptions:
 
-Therefore, the `rec_vit_model` directory must remain present in the project structure for the provided scripts to run correctly.
+- **`identity`** - corresponding patch tokens are connected across recurrent steps.
+- **`zero`** - patch-token rows are treated as new independent inputs; only the CLS dependency is propagated.
 
-The original RecViT implementation is not the contribution of this thesis. The contribution of this work consists of the adapted recurrent Attention Rollout implementation, attention-map generation and evaluation scripts, experiment automation scripts, and the methodology for comparing raw attention maps and recurrent rollout maps.
+Neither strategy is claimed to be universally correct. They are explicit modeling assumptions whose behavior is compared experimentally.
 
-Make sure the project is placed or launched so that this import works.
+## Recurrent evolution
 
-## Environment setup
+The Chihuahua example illustrates how foreground alignment changes in the final-to-step-input maps.
 
-The project is written in Python and uses PyTorch. A CUDA GPU is recommended for larger grid experiments, but a single run can also be executed on CPU.
+<table>
+  <tr>
+    <th>Input</th>
+    <th>Final to input step 1</th>
+    <th>Final to input step 2</th>
+    <th>Final to input step 3</th>
+  </tr>
+  <tr>
+    <td><img src="assets/results/chihuahua_53_fusion-mean_discard-0p9_patch-zero/input.png" alt="Chihuahua input" width="190"></td>
+    <td><img src="assets/results/chihuahua_53_fusion-mean_discard-0p9_patch-zero/rec_rollout_final_to_input_step_1_3_loops_zero_0.900_mean.png" alt="Final rollout to recurrent input step 1" width="190"></td>
+    <td><img src="assets/results/chihuahua_53_fusion-mean_discard-0p9_patch-zero/rec_rollout_final_to_input_step_2_3_loops_zero_0.900_mean.png" alt="Final rollout to recurrent input step 2" width="190"></td>
+    <td><img src="assets/results/chihuahua_53_fusion-mean_discard-0p9_patch-zero/rec_rollout_final_to_input_step_3_3_loops_zero_0.900_mean.png" alt="Final rollout to recurrent input step 3" width="190"></td>
+  </tr>
+</table>
 
-Recommended Python packages:
+Foreground alignment rises from **-0.007 to 0.080 to 0.168**. The final prediction is **Sphynx** (incorrect), showing that recurrent aggregation can improve localization without correcting the model's classification.
 
-```text
-torch
-torchvision
-timm
-numpy
-opencv-python
-Pillow
-```
+## Additional qualitative examples
 
-Example setup with Conda:
+### Successful explanation
+
+<table>
+  <tr>
+    <th>Input</th>
+    <th>Final recurrent rollout</th>
+    <th>Rollout + trimap boundary</th>
+  </tr>
+  <tr>
+    <td><img src="assets/results/Abyssinian_24_fusion-mean_discard-0p9_patch-identity/input.png" alt="Abyssinian cat input" width="260"></td>
+    <td><img src="assets/results/Abyssinian_24_fusion-mean_discard-0p9_patch-identity/rec_rollout_3_loops_identity_0.900_mean.png" alt="Abyssinian recurrent rollout" width="260"></td>
+    <td><img src="assets/results/Abyssinian_24_fusion-mean_discard-0p9_patch-identity/trimap/final_rollout_attention_trimap_overlay.png" alt="Abyssinian rollout with trimap boundary" width="260"></td>
+  </tr>
+</table>
+
+The rollout highlights the cat's distinctive facial features (**score: 0.461**) and the final prediction is **Abyssinian** (correct).
+
+### Failure case
+
+<table>
+  <tr>
+    <th>Input</th>
+    <th>Final recurrent rollout</th>
+    <th>Rollout + trimap boundary</th>
+  </tr>
+  <tr>
+    <td><img src="assets/results/boxer_139_fusion-mean_discard-0p9_patch-zero/input.png" alt="Boxer input with nearby person" width="260"></td>
+    <td><img src="assets/results/boxer_139_fusion-mean_discard-0p9_patch-zero/rec_rollout_3_loops_zero_0.900_mean.png" alt="Boxer recurrent rollout failure case" width="260"></td>
+    <td><img src="assets/results/boxer_139_fusion-mean_discard-0p9_patch-zero/trimap/final_rollout_attention_trimap_overlay.png" alt="Boxer rollout with trimap boundary" width="260"></td>
+  </tr>
+</table>
+
+The nearby person competes with the dog for attention, producing poor foreground localization (**score: -0.280**) despite the correct **Boxer** prediction. This is the clearest failure case in the selected examples.
+
+## Evaluation metric
+
+PET trimaps are converted into a score mask:
+
+| Region | Value |
+|---|---:|
+| Animal foreground | +1 |
+| Boundary | 0 |
+| Background | -1 |
+
+For normalized attention map \(A\) and score mask \(S\):
+
+$$\operatorname{score}(A,S)=\frac{\sum_i A_iS_i}{\sum_i A_i}.$$
+
+Scores lie between -1 and +1. A higher score means that more attention mass falls on the annotated animal foreground and less on the background. The neutral boundary reduces sensitivity to small segmentation-edge differences.
+
+## Installation
+
+Clone the repository and create an isolated environment:
 
 ```bash
-conda create -n recvit python=3.10
-conda activate recvit
-pip install torch torchvision timm numpy opencv-python pillow
+git clone https://github.com/m-shaforostov/rec-vit-attention-rollout.git
+cd rec-vit-attention-rollout
+
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install torch torchvision numpy opencv-python Pillow
 ```
 
-If you use a CUDA version of PyTorch, install it according to the official PyTorch instructions for your system.
+> A dependency file will replace the explicit installation command once the environment has been validated and version ranges have been recorded.
 
-## Required data and checkpoints
+### Checkpoint setup
 
-### Input images
-
-For PET experiments, the expected input folder is:
+The reference PET experiment uses a pretrained tiny RecViT checkpoint with three recurrent loops. The current loader expects the file:
 
 ```text
-examples_PET/
+<NETWORKS_DIR>/PET/pet_tiny_pretrained_k_3_run_0.pth
 ```
 
-Each PET image must have a matching trimap-like image with the same stem and the suffix `_trimap.png`.
+`NETWORKS_DIR` is defined by the bundled RecViT model configuration. Model weights are not committed to this repository. A compatible checkpoint must therefore be obtained separately and placed at the path above before running the example.
 
-Example:
+## Reference run
 
-```text
-examples_PET/
-├── basset_hound_38.jpg
-└── basset_hound_38_trimap.png
-```
-
-The grid script checks that each image has a corresponding trimap file.
-
-### Trained RecViT checkpoints
-
-The trained models are loaded by `load_trained_network(...)`. For the `tiny` model, checkpoint names are built from the dataset, model name, pretrained flag, number of recurrent loops, run number, and optional training flags.
-
-For example, a PET pretrained tiny checkpoint with 3 recurrent loops and run number 0 is expected to follow a naming pattern similar to:
-
-```text
-pet_tiny_pretrained_k_3_run_0.pth
-```
-
-The exact checkpoint root is controlled by `NETWORKS_DIR` in the RecViT model package configuration.
-
-## Running one image
-
-Use `rec_vit_explain.py` to generate rollout maps for a single image and one selected configuration.
-
-Example PET command:
+The following command reproduces the configuration used by the featured Abyssinian example when supplied with the corresponding image, trimap, and checkpoint:
 
 ```bash
 python rec_vit_explain.py \
-  --use_cuda \
-  --image_path ./examples_PET/basset_hound_38.jpg \
-  --trimap_path ./examples_PET/basset_hound_38_trimap.png \
-  --output_dir ./rollout_results/basset_hound_38 \
-  --model_name tiny \
+  --image_path path/to/Abyssinian_24.jpg \
+  --trimap_path path/to/Abyssinian_24_trimap.png \
+  --output_dir rollout_results/Abyssinian_24 \
   --dataset PET \
+  --model_name tiny \
+  --tiny_patch 8 \
   --n_loops 3 \
   --run_no 0 \
   --pretrained \
-  --tiny_patch 8 \
   --head_fusion mean \
-  --discard_ratio 0.5 \
-  --patch_attendance identity
-```
-
-Example CIFAR-10 command without trimap evaluation:
-
-```bash
-python rec_vit_explain.py \
-  --image_path ./examples_CIFAR10/plane.png \
-  --output_dir ./rollout_results/plane \
-  --model_name tiny \
-  --dataset CIFAR_10 \
-  --n_loops 1 \
-  --run_no 0 \
-  --head_fusion max \
   --discard_ratio 0.9 \
   --patch_attendance identity
 ```
 
-### Important arguments
-
-| Argument | Meaning |
-|---|---|
-| `--use_cuda` | Use GPU if CUDA is available. If omitted, CPU is used. |
-| `--image_path` | Path to the input image. |
-| `--output_dir` | Folder where generated maps and evaluation files are saved. |
-| `--head_fusion` | Method for fusing attention heads: `mean`, `max`, or `min`. |
-| `--discard_ratio` | Ratio of lowest attention values discarded during rollout. |
-| `--model_name` | RecViT model size, usually `tiny` or `extra_tiny`. |
-| `--dataset` | Dataset checkpoint type: `CIFAR_10`, `CIFAR_100`, or `PET`. |
-| `--n_loops` | Number of recurrent steps used by the loaded RecViT checkpoint. |
-| `--run_no` | Checkpoint run number. |
-| `--pretrained` | Load checkpoint trained from pretrained ViT initialization. |
-| `--tiny_patch` | Patch size for the tiny model. Use `8` for PET pretrained checkpoints when needed. |
-| `--trimap_path` | PET trimap-like input used for trimap-based evaluation. |
-| `--patch_attendance` | Cross-step patch strategy: `identity` or `zero`. |
-| `--use_different_inputs` | Experimental flag for different inputs across recurrent steps. The current main workflow uses the same input image at each step. |
-
-### Single-run outputs
-
-A single run saves files into `--output_dir`.
-
-Typical output:
+Main outputs:
 
 ```text
-rollout_results/<run_name>/
+rollout_results/Abyssinian_24/
 ├── input.png
-├── rec_rollout_<n_loops>_loops_<patch_strategy>_<discard_ratio>_<head_fusion>.png
-├── rec_rollout_final_to_input_step_1_<n_loops>_loops_<patch_strategy>_<discard_ratio>_<head_fusion>.png
-├── rec_rollout_final_to_input_step_2_<n_loops>_loops_<patch_strategy>_<discard_ratio>_<head_fusion>.png
-├── ...
+├── rec_rollout_3_loops_identity_0.900_mean.png
+├── rec_rollout_final_to_input_step_1_3_loops_identity_0.900_mean.png
+├── rec_rollout_final_to_input_step_2_3_loops_identity_0.900_mean.png
+├── rec_rollout_final_to_input_step_3_3_loops_identity_0.900_mean.png
 └── trimap/
-    ├── generated_trimap_color.png
     ├── attention_scores.csv
-    ├── final_rollout_attention_trimap_overlay.png
-    ├── final_to_input_step_1_attention_trimap_overlay.png
-    └── ...
+    ├── generated_trimap_color.png
+    └── final_rollout_attention_trimap_overlay.png
 ```
 
-The `trimap/` folder is created only for PET runs when `--trimap_path` is provided.
+Use `--use_cuda` to enable CUDA when a compatible NVIDIA GPU and PyTorch installation are available.
 
-## Running the PET grid experiment
+## Main capabilities
 
-Use `run_recvit_rollout_grid.py` for the full PET grid experiment. The script reads all image/trimap pairs from `examples_PET/` and runs all configured combinations.
+- Extracts multi-head self-attention from each Transformer layer and recurrent step.
+- Supports `mean`, `max`, and `min` attention-head fusion.
+- Supports configurable low-attention discard ratios.
+- Computes a local Attention Rollout matrix for every recurrent step.
+- Composes recurrent transitions with `identity` or `zero` patch assumptions.
+- Generates final and final-to-step-input attention heatmaps.
+- Produces PET trimap overlays and quantitative localization scores.
+- Provides command-line experiment controls and batch experiment tooling.
 
-```bash
-python run_recvit_rollout_grid.py
-```
+## Project origin
 
-The default grid configuration is defined at the top of the script:
+This project began as the practical component of my Bachelor's thesis at Comenius University. I wanted to explore a challenging topic in modern machine learning, and Vision Transformers caught my attention because of their growing importance in computer vision. During my research, I found that existing Attention Rollout methods were designed for standard feed-forward Vision Transformers and could not directly represent RecViT's multi-step recurrent inference.
 
-```python
-IMAGE_DIR = Path("./examples_PET")
-OUTPUT_ROOT = Path("./rollout_PET_grid_results")
-USE_CUDA = True
-SEED = 42
+That gap became the central challenge of the thesis. I designed and implemented an extension that propagates attention across both Transformer layers and recurrent steps, making it possible to inspect how attention-based relevance is aggregated during recurrent inference. I also built the visualization, evaluation, and experiment pipeline used to compare attention maps against Oxford-IIIT Pet trimaps.
 
-MODEL_NAMES = ["tiny"]
-DATASETS = ["PET"]
-TINY_PATCH = 8
+The project deepened my understanding of deep learning, Transformer architectures, explainable AI, experimental design, and the process of turning a research idea into working software.
 
-N_LOOPS = [2, 3, 4]
-RUN_NOS = [0]
-HEAD_FUSIONS = ["mean", "max", "min"]
-DISCARD_RATIOS = [0.0, 0.5, 0.9]
-PATCH_ATTENDANCES = ["identity", "zero"]
+## My contribution
 
-PRETRAINED = [True]
-METHOD2 = [False]
-REG_1000 = [False]
-ON_OFF = [False]
-USE_DIFFERENT_INPUTS = [False]
-```
+### Designed and implemented
 
-For each image, the default grid produces:
+- Analyzed why standard Attention Rollout cannot be applied directly across RecViT recurrence.
+- Designed recurrent rollout composition using custom transition matrices between steps.
+- Implemented the explainability pipeline in PyTorch.
+- Added per-step, final rollout, heatmap, and trimap-overlay visualizations.
+- Designed and implemented the PET trimap evaluation pipeline and localization metric.
+- Built command-line tooling and automated experiments covering hundreds of configurations.
+- Conducted the experiments, analyzed the results, and documented the findings in the thesis.
 
-```text
-3 loop counts × 3 head-fusion methods × 3 discard ratios × 2 patch strategies = 54 configurations per image
-```
+### Adapted existing work
 
-The total number of runs depends on the number of valid image/trimap pairs in `examples_PET/`.
+- Used an existing implementation of the **Recurrent Vision Transformer (RecViT)** as the model under analysis.
+- Adapted the original **Attention Rollout** method, developed for standard Transformers, to RecViT's recurrent architecture.
+- Modified the model-inspection pipeline to capture intermediate attention tensors from recurrent inference.
 
-## Grid output structure
+### Out of scope
 
-The grid script saves results under:
+- I did **not** design the RecViT architecture.
+- I did **not** train the RecViT checkpoints from scratch.
+- I did **not** develop a new image-classification model.
+- The contribution focuses on interpretability, algorithm design, implementation, and experimental evaluation rather than classification accuracy.
 
-```text
-rollout_PET_grid_results/
-```
+## Repository guide
 
-The folder structure is organized by model variant, image name, raw attention maps, and rollout configuration.
-
-Example structure:
-
-```text
-rollout_PET_grid_results/
-├── summary.json
-└── PET_tiny_pretrained_loops3_run0/
-    └── basset_hound_38/
-        ├── input.png
-        ├── trimap/
-        │   ├── generated_trimap_raw.png
-        │   └── generated_trimap_color.png
-        ├── raw_attention/
-        │   ├── fusion-mean/
-        │   │   ├── step_1/
-        │   │   │   ├── layer_01.npy
-        │   │   │   ├── layer_01.png
-        │   │   │   └── ...
-        │   │   ├── step_last/
-        │   │   │   ├── layer_01.npy
-        │   │   │   ├── layer_01.png
-        │   │   │   └── ...
-        │   │   └── raw_attention_scores.csv
-        │   ├── fusion-max/
-        │   └── fusion-min/
-        └── rollout/
-            └── fusion-mean_discard-0p5_patch-identity/
-                ├── final_rollout.npy
-                ├── final_rollout.png
-                ├── final_to_input_step_1.npy
-                ├── final_to_input_step_1.png
-                ├── final_to_input_step_2.npy
-                ├── final_to_input_step_2.png
-                ├── final_to_input_step_3.npy
-                ├── final_to_input_step_3.png
-                ├── vit_rollout_last_step.npy
-                ├── vit_rollout_last_step.png
-                ├── rollout_scores.csv
-                ├── combined_attention_scores.csv
-                └── run_metadata.json
-```
-
-### Important grid files
-
-| File | Description |
+| File | Purpose |
 |---|---|
-| `summary.json` | List of all grid runs and their status. Re-created when the grid script is run. |
-| `input.png` | Resized input image used for visualization. |
-| `generated_trimap_raw.png` | Generated raw trimap mask. |
-| `generated_trimap_color.png` | Colored trimap visualization. |
-| `raw_attention_scores.csv` | Scores for raw layer-wise attention maps. |
-| `rollout_scores.csv` | Scores for rollout maps in one configuration. |
-| `combined_attention_scores.csv` | Raw attention and rollout scores combined for one configuration. |
-| `run_metadata.json` | Configuration, output paths, number of saved maps, and per-step predictions. |
-| `.npy` files | Raw numerical attention masks. |
-| `.png` files | Heatmap overlays saved for visual inspection. |
+| `rec_vit_rollout.py` | Recurrent rollout algorithm, local rollout, and cross-step transition composition |
+| `rec_vit_explain.py` | CLI, preprocessing, model inference, visualization, and output generation |
+| `attention_map_evaluation.py` | Trimap conversion and attention localization scoring |
+| `reveal_segmentation.py` | Trimap generation and visualization helpers |
+| `rec_vit_model/` | Existing RecViT model implementation and checkpoint-loading utilities |
 
-## Attention map types
+## Limitations
 
-The project produces several kinds of maps.
+- The final evaluation uses a small, manually selected subset of eight PET images and is not statistically representative of the complete dataset.
+- The public pipeline currently uses the same image at every recurrent step; multi-input recurrence is not implemented.
+- Cross-step patch-token behavior is not specified directly by RecViT, so `identity` and `zero` are explicit assumptions.
+- Results depend on the chosen head fusion, discard ratio, recurrent depth, and patch-transition strategy.
+- The trimap score measures spatial foreground/background alignment, not causal importance.
+- Raw attention is strongly layer-dependent; some intermediate raw layers can outperform the fixed final-layer reference. Recurrent rollout should be viewed as a systematic aggregation method, not a universal replacement for raw attention maps.
 
-### Raw attention maps
+## Future work
 
-Raw attention maps are generated in the grid script. They are extracted from selected recurrent steps:
+- Evaluate on a larger, representative dataset split.
+- Compare against additional explainability methods and causal evaluation protocols.
+- Study alternative cross-step patch-transition models.
+- Add focused unit tests for rollout composition and scoring.
+- Publish a validated dependency specification and checkpoint acquisition workflow.
+- Build an interactive demo for exploring recurrent-step attention.
 
-- first recurrent step: `step_1`
-- final recurrent step: `step_last`
+## References
 
-For each selected step, the script saves one map per Transformer layer after head fusion.
+1. Pócoš, Š., Bečková, I., & Farkaš, I. (2024). [RecViT: Enhancing Vision Transformer with Top-Down Information Flow](https://www.scitepress.org/Papers/2024/124647/124647.pdf).
+2. Abnar, S., & Zuidema, W. (2020). [Quantifying Attention Flow in Transformers](https://aclanthology.org/2020.acl-main.385.pdf).
+3. Vaswani, A., et al. (2017). [Attention Is All You Need](https://proceedings.neurips.cc/paper_files/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
+4. Shaforostov, M. (2026). *Analysis of attention maps generated by recurrent neural network RecViT and comparison with other explainability methods*. Bachelor's thesis, Comenius University in Bratislava.
 
-### Final recurrent rollout map
+## Attribution and license
 
-`final_rollout` is the main RecViT-adapted rollout map. It represents attention propagation from the final recurrent output back to the input of the first recurrent step.
+The repository builds on prior RecViT and Attention Rollout work. See the references above and the source-level history for attribution. The included upstream Attention Rollout code is distributed under the MIT License; see [`LICENSE`](LICENSE) for the preserved notice.
 
-### Step-input rollout maps
+---
 
-`final_to_input_step_<t>` maps represent attention propagation from the final recurrent output to the input of recurrent step `t`.
-
-### Standard ViT rollout of the last step
-
-`vit_rollout_last_step` is the standard per-step rollout computed only for the final recurrent step. It is useful as a comparison to the full recurrent rollout.
-
-## Evaluation method
-
-For PET experiments, the project evaluates attention maps using trimap-derived masks.
-
-The trimap is converted to a score mask:
-
-```text
-background = -1.0
-border     =  0.0
-foreground =  1.0
-```
-
-Each attention map is normalized to `[0, 1]`, weighted by this score mask, and averaged by the attention mass. A higher score means that more attention is concentrated on the foreground region and less on the background.
-
-The score is saved in CSV files such as:
-
-```text
-attention_scores.csv
-raw_attention_scores.csv
-rollout_scores.csv
-combined_attention_scores.csv
-```
-
-## How the RecViT rollout works
-
-The core implementation is in `rec_vit_rollout.py`.
-
-The workflow is:
-
-1. Register forward hooks on attention modules that contain `qkv` projections.
-2. During each recurrent step, collect attention matrices separately.
-3. For each recurrent step, fuse attention heads using `mean`, `max`, or `min`.
-4. Optionally discard the lowest attention values according to `discard_ratio`.
-5. Add the identity matrix to account for residual connections.
-6. Normalize rows and multiply attention matrices across layers to obtain a local rollout matrix for the step.
-7. Connect the local rollout matrices across recurrent steps using transition matrices.
-8. Extract the class-token-to-patch relevance row and reshape it into a 2D heatmap.
-
-The recurrent transition uses the previous step rollout for the class-token connection. Patch-token transitions are controlled by `patch_attendance`:
-
-- `identity`: corresponding patch positions are linked across steps.
-- `zero`: patch tokens are not directly propagated across steps.
-
-## Reproducibility notes
-
-The grid script fixes random seeds:
-
-```python
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-```
-
-For reproducible experiments, keep the same:
-
-- input images,
-- trimap images,
-- trained checkpoints,
-- model variant,
-- number of recurrent loops,
-- head-fusion method,
-- discard ratio,
-- patch-attendance strategy,
-- patch size,
-- CUDA/CPU environment.
-
-## Common problems
-
-### Import error for `rec_vit_model`
-
-Make sure the RecViT model package is available in the Python path and that the project is launched from the correct directory.
-
-### Checkpoint not found
-
-Check that `NETWORKS_DIR` points to the correct checkpoint directory and that the checkpoint name matches the selected dataset, model, loop count, run number, and flags.
-
-### CUDA requested but CPU is used
-
-`--use_cuda` only enables GPU if CUDA is available through PyTorch. If CUDA is not available, the script falls back to CPU.
-
-### Missing trimap in the grid script
-
-For each PET image, the grid script expects a matching file named:
-
-```text
-<image_stem>_trimap.png
-```
-
-For example:
-
-```text
-boxer_139.jpg
-boxer_139_trimap.png
-```
-
-### Existing outputs are overwritten
-
-Running the scripts again with the same output directory can overwrite files with the same names. Use a new output directory if you want to preserve old runs.
-
-## Recommended thesis workflow
-
-For thesis experiments, a practical workflow is:
-
-1. Test one image with `rec_vit_explain.py`.
-2. Verify that model loading, prediction, rollout generation, and trimap evaluation work.
-3. Run the full PET grid with `run_recvit_rollout_grid.py`.
-4. Inspect `summary.json` for failed runs.
-5. Use `combined_attention_scores.csv` files for quantitative comparison.
-6. Use saved `.png` overlays for representative qualitative figures.
-7. Use both raw attention maps and rollout maps, but avoid showing every generated map in the thesis text.
-
-## License and attribution
-
-This repository contains research code for RecViT attention-map analysis. Parts of the RecViT model code are based on or adapted from the original RecViT/timm implementation. Add the exact license and citation information of the original RecViT repository and any reused code before publishing the project publicly.
+<p align="center">
+  Built by <strong>Maksym Shaforostov</strong> as a research and software-engineering project in explainable computer vision.
+</p>
