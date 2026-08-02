@@ -66,7 +66,6 @@ def build_step_transition(prev_step_rollout_matrix, patch_attendance="identity")
         )
     # Current input CLS at step t = previous step output CLS
     transition[0, :] = prev_step_rollout_matrix[0, 0, :]
-
     return transition
 
 
@@ -115,7 +114,7 @@ class RecVITAttentionRollout:
 
         for name, module in model.named_modules():
             if "attn" in name and hasattr(module, "qkv"):
-                print("Hooking:", name)
+                # print("Hooking:", name)
                 module.register_forward_hook(self.get_attention)
 
     def get_attention(self, module, input, output):
@@ -214,10 +213,10 @@ class RecVITAttentionRollout:
 
         with torch.no_grad():
             # Recurrence starts from the learned cls_token
-            print("1. cls_token.shape = ", self.model.cls_token.shape)
+            # print("1. cls_token.shape = ", self.model.cls_token.shape)
             cls_token = self.model.cls_token.expand(input_tensor.shape[0], -1, -1)
-            print("2. cls_token.shape = ", cls_token.shape)
-            print(cls_token)
+            # print("2. cls_token.shape = ", cls_token.shape)
+            # print(cls_token)
 
             # if self.use_different_inputs and input_tensor.size() != self.repeats:
             #         print("Number of input tensors ({}) does not match number of recurrence steps ({})".format(input_tensor.size(), self.repeats))
