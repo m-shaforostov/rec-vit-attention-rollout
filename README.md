@@ -161,11 +161,11 @@ PET trimaps are converted into a score mask:
 | Animal foreground | +1 |
 | Boundary | 0 |
 | Background | -1 |
+For a normalized attention map \(A\) and score mask \(S\):
 
-For normalized attention map \(A\) and score mask \(S\):
-
-$$\operatorname{score}(A,S)=\frac{\sum_i A_iS_i}{\sum_i A_i}.$$
-
+$$
+\mathrm{score}(A,S)=\frac{\sum_i A_iS_i}{\sum_i A_i}
+$$
 Scores lie between -1 and +1. A higher score means that more attention mass falls on the annotated animal foreground and less on the background. The neutral boundary reduces sensitivity to small segmentation-edge differences.
 
 ## Installation
@@ -192,7 +192,7 @@ The reference PET experiment uses a pretrained tiny RecViT checkpoint with three
 <NETWORKS_DIR>/PET/pet_tiny_pretrained_k_3_run_0.pth
 ```
 
-`NETWORKS_DIR` is defined by the bundled RecViT model configuration. Model weights are not committed to this repository. A compatible checkpoint must therefore be obtained separately and placed at the path above before running the example.
+`NETWORKS_DIR` is defined by the bundled RecViT model configuration. Example model weights are committed to 'rec_vit_model/data/networks/PET/pet_tiny_pretrained_k_3_run_0.pth'. A compatible checkpoint must therefore be obtained separately and placed at the path above before running the example.
 
 ## Reference run
 
@@ -299,8 +299,6 @@ The project deepened my understanding of deep learning, Transformer architecture
 - Evaluate on a larger, representative dataset split.
 - Compare against additional explainability methods and causal evaluation protocols.
 - Study alternative cross-step patch-transition models.
-- Add focused unit tests for rollout composition and scoring.
-- Publish a validated dependency specification and checkpoint acquisition workflow.
 - Build an interactive demo for exploring recurrent-step attention.
 
 ## References
