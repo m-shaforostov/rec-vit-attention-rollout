@@ -68,7 +68,7 @@ flowchart TB
     S2 -->|"propagated CLS token"| S3["RecViT step 3"]
 
     S1 --> R1["Local rollout R1"]
-    S1 --> C2["Transition C2"]
+    S1 --> C2("Transition C2")
     S2 --> R2["Local rollout R2"]
     S2 --> C3["Transition C3"]
     S3 --> R3["Local rollout R3"]
