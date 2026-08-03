@@ -36,7 +36,7 @@ The rollout is strongly concentrated on the cat, especially its face and eyes (*
 
 ## Key results
 
-The final thesis experiments evaluated **432 completed configurations** on eight selected Oxford-IIIT Pet images. The grid covered 2-4 recurrent loops, three attention-head fusion methods, three discard ratios, and two patch-transition strategies.
+The final thesis experiments evaluated **432 completed configurations** on a reduced Oxford-IIIT Pet subset. The grid covered 2-4 recurrent loops, three attention-head fusion methods, three discard ratios, and two patch-transition strategies.
 
 | Comparison | Fixed raw final-layer attention | Last-step local rollout | Final recurrent rollout |
 |---|---:|---:|---:|
@@ -68,14 +68,16 @@ flowchart TB
     S2 -->|"propagated CLS token"| S3["RecViT step 3"]
 
     S1 --> R1["Local rollout R1"]
+    S1 --> C2["Transition C2"]
     S2 --> R2["Local rollout R2"]
+    S2 --> C3["Transition C3"]
     S3 --> R3["Local rollout R3"]
 
-    R1 --> C2["Transition C2"]
-    R2 --> C3["Transition C3"]
-    R3 --> F["Final recurrent rollout"]
-    C2 --> F
-    C3 --> F
+    R1 ==> C2
+    C2 ==> R2
+    R2 ==> C3
+    C3 ==> R3
+    R3 ==> F
 ```
 
 For recurrent step \(t\), residual-aware layer attentions are composed into a local rollout matrix:
