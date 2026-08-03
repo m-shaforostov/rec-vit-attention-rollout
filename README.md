@@ -63,21 +63,26 @@ At every recurrent step, the implementation captures the attention matrices from
 
 ```mermaid
 flowchart TB
+    subgraph Local Rollouts
     I["Input image"] --> S1["RecViT step 1"]
     S1 -->|"propagated CLS token"| S2["RecViT step 2"]
     S2 -->|"propagated CLS token"| S3["RecViT step 3"]
 
     S1 --> R1["Local rollout R1"]
-    S1 --> C2("Transition C2")
     S2 --> R2["Local rollout R2"]
-    S2 --> C3["Transition C3"]
     S3 --> R3["Local rollout R3"]
-
-    R1 ==> C2
-    C2 ==> R2
-    R2 ==> C3
-    C3 ==> R3
-    R3 ==> F
+    end
+    
+    subgraph Recurrent Rollout
+    LR1["Local rollout LR1"]
+    LR2["Local rollout LR2"]
+    LR3["Local rollout LR3"]
+    LR1 ==> C2["Transition C2"]
+    C2 ==> LR2
+    LR2 ==> C3["Transition C3"]
+    C3 ==> LR3
+    LR3 ==> F["Final Attention Rollout F"]
+    end
 ```
 
 For recurrent step \(t\), residual-aware layer attentions are composed into a local rollout matrix:
