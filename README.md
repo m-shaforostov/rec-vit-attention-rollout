@@ -72,7 +72,10 @@ flowchart TB
     S2 --> R2["Local rollout R2"]
     S3 --> R3["Local rollout R3"]
     end
-    
+```
+```mermaid
+flowchart TB
+   
     subgraph Recurrent Rollout
     LR1["Local rollout LR1"]
     LR2["Local rollout LR2"]
